@@ -64,6 +64,11 @@
 %    its row in Resultater and its rows in Lydlog are OVERWRITTEN.
 %    Afterwards the experiment continues where it was.
 %
+%  GAZE CHECK: if more than gazeMissingMax (default half) of the frames of a
+%    recording have no gaze data, a red screen asks "Advarsel: gaze data er
+%    utilstrækkelig. Tag seneste optagelse om?" right after the recording.
+%    '1' = no (continue), '3' = yes (the same recording is redone and overwritten).
+%
 % To run a new participant, write the name in
 %  Settings > ParticipantName (e.g. P05), SAVE the workbook, then press Run.
 %
@@ -91,6 +96,14 @@ cueTextSize   = 1.0;    % extra size factor for ALL text in the participant wind
 % Vicon subject / segment (Tobii glasses)
 SubjectName = System.String('P3');
 SegmentName = System.String('TobiiGlassesP3');
+
+% Gaze data check: after every recording, if more than this fraction of
+% the frames has no gaze data (NaN or 0 in EyeTrackerGlobalGazeVector or
+% EyeTrackerGlobalPosition), the participant window shows a red warning
+% "Advarsel: gaze data er utilstrækkelig. Tag seneste optagelse om?"
+% ('1' = nej, '3' = ja -> the recording is redone and overwritten).
+% 0.5 = more than half missing (e.g. > 1250 of 2500 frames in a 50 s recording).
+gazeMissingMax = 0.5;     % [] or Inf = no gaze check
 
 % Head reference
 % Which direction of the TobiiGlassesP3 segment points out of the nose,
@@ -260,7 +273,7 @@ end
 % replaces the row(s) of that recording.
 headers  = {'Blok', 'Optagelse', 'Betingelse', 'BetingelseNavn', 'Target', ...
     'Interferer', 'Historie', 'InterfererHistorie', 'Triggerord', 'AntalSvar', 'Reaktionstider_sek', ...
-    'Starttid', 'Soundscape', 'Distraktorer', 'Varighed_sek', 'ViconFil', 'MikrofonFil', 'AntalOmtagninger'};
+    'Starttid', 'Soundscape', 'Distraktorer', 'Varighed_sek', 'ViconFil', 'MikrofonFil', 'AntalOmtagninger', 'GazeManglende_pct'};
 results  = cell(totalRecordings, numel(headers));
 recDone  = false(totalRecordings, 1);     % recording has been made at least once
 redoCount = zeros(totalRecordings, 1);     % how often each recording was redone
@@ -281,7 +294,7 @@ try
     nextRec    = 1;   % next NEW recording
     redoRec    = 0;   % recording to redo (0 = none)
     shownBlock = 0;   % last block whose instructions were printed
-    while nextRec <= totalRecordings
+    while nextRec <= totalRecordings || redoRec > 0   % redoRec: the last recording can also be redone
         isRedo = redoRec > 0;
         if isRedo; thisRec = redoRec; else; thisRec = nextRec; end
         blockIdx = ceil(thisRec / recordingsPerBlock);
@@ -443,6 +456,13 @@ try
             redoCount(thisRec) = redoCount(thisRec) + 1;
         end
         RedoCount = redoCount(thisRec);
+        % Gaze data check: a frame is missing if the gaze vector or the eye
+        % tracker position is NaN or all zeros in that frame.
+        gazeMissing = any(isnan(EyeTrackerGlobalGazeVector), 2) | any(isnan(EyeTrackerGlobalPosition), 2) | ...
+            all(EyeTrackerGlobalGazeVector == 0, 2) | all(EyeTrackerGlobalPosition == 0, 2);
+        GazeMissingFrames   = sum(gazeMissing);
+        GazeMissingFraction = GazeMissingFrames / nFrames;
+        gazeInsufficient = ~isempty(gazeMissingMax) && GazeMissingFraction > gazeMissingMax;
         % recording_<deltager>_<session>_<nr>_blok<b>_opt<r>_cond<c>_target<T>.mat
         % A redo reuses the file name of the first take -> the file is overwritten.
         if isempty(viconFiles{thisRec})
@@ -459,6 +479,7 @@ try
             'Condition', 'ConditionName', 'Target', 'Interferer', ...
             'NoiseFile', 'Distractors', 'Sounds', 'RecordingStartClock', ...
             'TriggerWord', 'Story', 'InterfererStory', 'RecordingDuration', 'RedoCount', ...
+            'GazeMissingFrames', 'GazeMissingFraction', ...
             'fs', 'samplesPerFrame', 'channelMapping', ...
             'soundscapeChannels', 'distractorChannels', ...
             'MicData', 'MicToneData', 'MicEndToneData', 'MicOverrun', 'micNames', 'micDescription');
@@ -485,7 +506,7 @@ try
             blockIdx, recIdx, Condition, ConditionName, Target, Interferer, ...
             Story, storyCell(InterfererStory), ...
             triggerWord, numel(rts), rtStr, startStr, soundscapeLabel(NoiseFile), ...
-            distractorString(Distractors), recordingDuration, viconFile, viconFile, RedoCount };
+            distractorString(Distractors), recordingDuration, viconFile, viconFile, RedoCount, round(100 * GazeMissingFraction, 1) };
         recDone(thisRec) = true;
         % One log row per sound: which file, which loudspeaker, when.
         % On a redo the old rows of this recording are replaced.
@@ -518,6 +539,18 @@ try
                 fprintf('Blok %d færdig.\n', blockIdx);
             end
             nextRec = nextRec + 1;
+        end
+        % ---- Gaze data check -> offer to redo THIS recording --------
+        if gazeInsufficient
+            fprintf(2, '  ADVARSEL: gaze data mangler i %d af %d frames (%.0f%%).\n', ...
+                GazeMissingFrames, nFrames, 100 * GazeMissingFraction);
+            if confirmRedo(fig, 'Advarsel: gaze data er utilstrækkelig.', ...
+                    'Tag seneste optagelse om?', 30)
+                redoRec = thisRec;
+                fprintf('  Omtagning bekræftet (gaze-advarsel).\n');
+            else
+                fprintf('  Ingen omtagning - fortsætter.\n');
+            end
         end
     end
 catch ME
@@ -1596,9 +1629,10 @@ while true
     end
 end
 end
-function yes = confirmRedo(fig)
-% Red safety screen: "Tag seneste optagelse om - Er du sikker?"
-% '1' = no, '3' = yes. Every other key is ignored. The normal look of the
+function yes = confirmRedo(fig, line1, line2, line2Size)
+% Red safety screen, by default "Tag seneste optagelse om - Er du sikker?".
+% line1 / line2 / line2Size (font size of line2) give other texts, e.g. the
+% gaze data warning. '1' = no, '3' = yes. Every other key is ignored. The normal look of the
 % window is restored afterwards (the caller redraws the cue screen).
 red   = [0.80 0.08 0.08];
 white = [1 1 1];
@@ -1609,12 +1643,15 @@ old   = get(h, props);
 oldP  = get(hp, {'BackgroundColor', 'HighlightColor'});
 oldFigColor = get(fig, 'Color');
 fsc   = getappdata(fig, 'fontScale');  if isempty(fsc); fsc = 1; end
+if nargin < 2 || isempty(line1);     line1     = 'Tag seneste optagelse om'; end
+if nargin < 3 || isempty(line2);     line2     = 'Er du sikker?';            end
+if nargin < 4 || isempty(line2Size); line2Size = 40;                         end
 set(fig, 'Color', red);
 set(h,  'BackgroundColor', red, 'ForegroundColor', white);
 set(hp, 'BackgroundColor', red, 'HighlightColor', white);
-setLabel(fig, 'instruction',   'Tag seneste optagelse om');
-setLabel(fig, 'condition',     'Er du sikker?');
-set(findobj(fig, 'Tag', 'condition'), 'FontSize', 40 * fsc);
+setLabel(fig, 'instruction',   line1);
+setLabel(fig, 'condition',     line2);
+set(findobj(fig, 'Tag', 'condition'), 'FontSize', line2Size * fsc);
 setLabel(fig, 'triggerHeader', '');
 set(findobj(fig, 'Tag', 'triggerWord'), 'Visible', 'off');
 setLabel(fig, 'triggerStatus', '');
