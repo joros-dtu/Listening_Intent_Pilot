@@ -1,7 +1,10 @@
 %% Experimental script with Vicon DataStream SDK
 % PhD pilot recording
 %
-% Updated 04-11-2026 by Josephine Tanyous Rosenqvist
+% Updated 11-11-2026 by Josephine Tanyous Rosenqvist
+%   - one fixed soundscape (Cocktail party) in ALL recordings, incl. condition 2
+%   - distractors only from 0, +-45, +-90, +-135, 180 deg, randomised + balanced
+%   - ENTER = start recording + trigger word, BACKSPACE = redo
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %
 % The xperiment is controlled from the Excel workbook
@@ -10,28 +13,34 @@
 %
 %  Conditions (one condition per block):
 %    1 = Attention failure   : target + interferer facilitator talk live,
-%                              silence, or ONE soundscape file for the whole recording
-%    2 = Directed attention  : only the target facilitator talks, nothing played
+%                              + the soundscape
+%    2 = Directed attention  : only the target facilitator talks,
+%                              + the soundscape
 %    3 = Automatic attention : target talks, distractors from the
-%                              'Distractors' sheet (file, loudspeaker, onset),
-%                              on top of silence or ONE soundscape file
+%                              'Distractors' sheet (file, onset) + the soundscape
 %
-%  Default audio is SILENCE. A soundscape is only added on top in
-%  condition 1/3 recordings. Which file is chosen, in order of priority:
-%    1. 'Soundscapes' sheet (Condition | Target | Recording | File): one file per
-%       recording, File relative to BackgroundNoiseFolder. Empty / silence = silence.
-%    2. Soundscape / NoiseFile column in the Blocks sheet:
-%         empty    -> silence (default)
-%         RANDOM   -> a new, randomly drawn file from BackgroundNoiseFolder for every
-%                     recording, no repeats unless the folder has too few files
-%         filename -> that file in every recording of the block
+%  SOUNDSCAPE: ONE fixed file (soundscapeFile below, searched for in
+%  BackgroundNoiseFolder) plays in EVERY recording of EVERY condition,
+%  including condition 2. The 'Soundscapes' sheet and the Soundscape /
+%  NoiseFile column of the Blocks sheet are no longer used.
+%
+%  DISTRACTORS are controlled from the 'Distractors' sheet
+%  (Condition | Target | Recording | File | Loudspeaker | Onset_s; the extra
+%  columns Talker / Angle_deg are for information only). File is relative to
+%  DistractorFolder, e.g. mark\recording_....wav. Each file is played in
+%  full (any length), cut only at the end of the recording.
+%  Loudspeakers: only the 8 positions in distractorAngles below are allowed
+%  (0, +-45, +-90, +-135, 180 deg = LS 24, 21, 3, 18, 6, 15, 9, 12).
+%  Before the session the script checks that only these loudspeakers are
+%  used, that each is used equally often, that no loudspeaker is used twice
+%  in one recording and that no two distractors overlap in time.
 %  The full playlist is written to the results file BEFORE the first
-%  recording, and every sound that is played is logged with its file name
-%  and clock time.
+%  recording, and every sound that is played is logged with its file name,
+%  loudspeaker, angle and clock time.
 %
-%  Distractors and Soundscapes rows are keyed by Condition + Target, so they
-%  follow the condition when you reorder the Blocks sheet. (An old-style
-%  Block column still works if Condition/Target are missing.)
+%  Distractors rows are keyed by Condition + Target, so they follow the
+%  condition when you reorder the Blocks sheet. (An old-style Block column
+%  still works if Condition/Target are missing.)
 %
 %  STORIES: 24 stories (= half of all recordings), always in the same order
 %  regardless of condition: block b, recording r -> story mod((b-1)*8+r-1, 24)+1.
@@ -49,25 +58,34 @@
 %    recording file as HeadReference (p0, q0, R0, ...). Use headRelative.m
 %    afterwards to express head position/direction and gaze relative to it.
 %
+%  KEYS (participant window):
+%    ENTER     = start a recording (cue screen) AND register the trigger
+%                word (during a recording)
+%    BACKSPACE = redo the previous recording (cue screen)
+%    1-7       = questionnaire answers (unchanged)
+%    Because ENTER is used both for the trigger word and for starting,
+%    key presses are ignored for keyLockout_s after every screen change, so
+%    a late trigger press can never start the next recording by accident.
+%
 %  Flow per recording:
-%    cue screen -> participant presses '1' (start recording)
+%    cue screen -> participant presses ENTER (start recording)
 %    -> Vicon streaming + audio playback start together
 %    -> recording lasts RecordingDuration_s (Settings sheet)
 %    -> Vicon data saved to its own .mat file
 %       (GLOBAL head pose + eye tracker data, NaN where occluded)
 %    -> end tone (same 1 kHz tone as the start tone) signals the end
 %
-%  REDO: on the cue screen, pressing '3' asks to redo the PREVIOUS recording
+%  REDO: on the cue screen, pressing BACKSPACE asks to redo the PREVIOUS recording
 %    (red screen: "Tag seneste optagelse om - Er du sikker?").
-%    '1' = no (back to the cue screen), '3' = yes. The cue screen of the
-%    previous recording is then shown, '1' starts it, and its .mat file,
+%    ENTER = no (back to the cue screen), BACKSPACE = yes. The cue screen of the
+%    previous recording is then shown, ENTER starts it, and its .mat file,
 %    its row in Resultater and its rows in Lydlog are OVERWRITTEN.
 %    Afterwards the experiment continues where it was.
 %
 %  GAZE CHECK: if more than gazeMissingMax (default half) of the frames of a
 %    recording have no gaze data, a red screen asks "Advarsel: gaze data er
 %    utilstrækkelig. Tag seneste optagelse om?" right after the recording.
-%    '1' = no (continue), '3' = yes (the same recording is redone and overwritten).
+%    ENTER = no (continue), BACKSPACE = yes (the same recording is redone and overwritten).
 %
 % To run a new participant, write the name in
 %  Settings > ParticipantName (e.g. P05), SAVE the workbook, then press Run.
@@ -101,7 +119,7 @@ SegmentName = System.String('TobiiGlassesP3');
 % the frames has no gaze data (NaN or 0 in EyeTrackerGlobalGazeVector or
 % EyeTrackerGlobalPosition), the participant window shows a red warning
 % "Advarsel: gaze data er utilstrækkelig. Tag seneste optagelse om?"
-% ('1' = nej, '3' = ja -> the recording is redone and overwritten).
+% (ENTER = nej, BACKSPACE = ja -> the recording is redone and overwritten).
 % 0.5 = more than half missing (e.g. > 1250 of 2500 frames in a 50 s recording).
 gazeMissingMax = 0.5;     % [] or Inf = no gaze check
 
@@ -114,7 +132,7 @@ refDuration_s = 2;        % seconds the reference pose is averaged over
 % Audio setup
 fs              = 48000;
 samplesPerFrame = 960;   % 50 fps to match Tobii 50 Hz;
-noiseAmp        = 0.20;   % gain for the soundscape (if any)
+noiseAmp        = 0.0895;   % gain for the soundscape (if any)
 distractorAmp   = 0.20;   % gain for the distractor sounds
 
 % Start / end tone: played on ALL loudspeakers (every channel in channelMapping,
@@ -127,11 +145,31 @@ startToneDur_s  = 1.0;    % seconds
 startToneAmp    = 0.0005;   % gain PER loudspeaker (many speakers sum up -> keep low)
 startToneRamp_s = 0.010;  % 10 ms raised-cosine fade in/out (avoids clicks)
 
+% Soundscape: this ONE file is played in every recording of every
+% condition (also condition 2). Searched for in Settings > BackgroundNoiseFolder
+% (subfolders included).
+soundscapeFile = 'Cocktail-Party_Large_Background_C-01_EM32_130dBFS_4OA.wav';
+
+% Key lockout: after a screen change (cue screen, red redo / gaze screen),
+% key presses are ignored for this many seconds. ENTER is both the trigger
+% key and the start key, so this stops a late trigger press from starting
+% the next recording (or answering the gaze warning) by accident.
+keyLockout_s = 1.0;
+
 % Output channels for the DISTRACTORS: the 24 loudspeakers at ear level.
-% Loudspeaker 1..24 in the Distractors sheet = position in this list,
-% i.e. Loudspeaker k = ring position k = device channel 30 + k.
+% Loudspeaker k = ring position k = device channel 30 + k.
 % (The previous 6-speaker setup used ring positions [2 4 6 22 20 18].)
 distractorChannels = 30 + (1:24);
+% Angle of loudspeaker 1..24 (degrees, 0 = straight ahead of the participant)
+lsAngles = [-15 -30 -45 -60 -75 -90 -105 -120 -135 -150 -165 180 ...
+            165 150 135 120 105 90 75 60 45 30 15 0];
+% Allowed distractor angles. The loudspeakers themselves come from the
+% Distractors sheet; the script refuses to start (ValidateDesign = 1) if a
+% row uses another loudspeaker or the angles are not used equally often.
+distractorAngles = [0 45 -45 90 -90 135 -135 180];
+% Longest part of a distractor file that is played, in seconds
+% (Inf = the whole file; it is always cut at the end of the recording).
+distractorMax_s = Inf;
 
 % Output channels for the SOUNDSCAPES:
 % channel k of a soundscape file is played on soundscapeChannels(k)
@@ -139,17 +177,15 @@ distractorChannels = 30 + (1:24);
 soundscapeChannels = [2:2:24 25:48];
 
 % Microphones (recorded in sync with the Vicon data, one file per recording)
-%   AN5   = reference mic directly in front of the participant (MADI ch 1)
-%   Mic11 = facilitator X, LEFT side of the setup     (Analog ch 11)
-%   Mic12 = other facilitator, RIGHT side of the setup (Analog ch 12)
+%   Mic11 = facilitator on the LEFT side of the setup  (Analog ch 11)
+%   Mic12 = facilitator on the RIGHT side of the setup (Analog ch 12)
+% Who sits left/right (A or B) comes from Settings > FacilitatorA_Side
+% (looked up in the Counterbalancing sheet); micDescription is updated below.
+% (Mic level -> dB SPL at the listening position: see mic_calibration_recording.m)
 recordMics     = true;    % false = no microphone recording
-micDeviceMADI  = 'MADI (1-8) (RME UFX+ USB 3.0)';      % ch1 = AN5
 micDeviceANA   = 'Analog (11+12) (RME UFX+ USB 3.0)';  % ch1 = Mic11, ch2 = Mic12
 micBitDepth    = '16-bit integer';
-micNames       = {'AN5', 'Mic11', 'Mic12'};
-micDescription = {'Referencemikrofon foran deltager', ...
-    'Facilitator X (venstre side)', ...
-    'Anden facilitator (hoejre side)'};
+micNames       = {'Mic11', 'Mic12'};   % micDescription / micFacilitator: set after the setup is read
 
 %% ----------------------------------------------------------------
 conditionNames = {'Attention failure', 'Directed attention', 'Automatic attention'};
@@ -165,7 +201,16 @@ if numel(unique(soundscapeChannels)) ~= out.nSS || numel(unique(distractorChanne
     error('soundscapeChannels and distractorChannels must not contain the same channel twice.');
 end
 
+if numel(lsAngles) ~= numel(distractorChannels)
+    error('lsAngles must have one angle per loudspeaker in distractorChannels.');
+end
+[okAng, distractorLS] = ismember(distractorAngles, lsAngles);   % loudspeaker number per angle
+if ~all(okAng)
+    error('distractorAngles %s not found in lsAngles.', mat2str(distractorAngles(~okAng)));
+end
 fprintf('[DEBUG] Distractor device channels (LS 1..%d): %s\n', numel(distractorChannels), mat2str(distractorChannels));
+fprintf('Distraktor-hoejttalere: %s\n', strjoin(arrayfun(@(ls) sprintf('LS%d (%d°)', ls, lsAngles(ls)), ...
+    distractorLS, 'UniformOutput', false), ', '));
 fprintf('[DEBUG] Total device channels in stream: %d  (max=%d)\n', out.nOut, max(channelMapping));
 
 % Folder of the real script file, even when run with Run Section / F9.
@@ -183,13 +228,25 @@ cd(scriptDir);
 fprintf('Arbejdsmappe: %s\n', scriptDir);
 % ---- Read and check the whole design BEFORE touching any hardware ----
 cfg = loadSetup(setupFile, scriptDir);
+% Seating (fixed for the whole session): which facilitator sits left/right,
+% and which facilitator is on which mic (Mic11 = left, Mic12 = right)
+FacilitatorA_Side = cfg.sideA;
+FacilitatorB_Side = cfg.sideB;
+if strcmp(cfg.sideA, 'left'); micFacilitator = {'A', 'B'}; else; micFacilitator = {'B', 'A'}; end
+micDescription = {sprintf('Facilitator %s (venstre side)', micFacilitator{1}), ...
+    sprintf('Facilitator %s (hoejre side)', micFacilitator{2})};
+fprintf('Siddeplacering: Facilitator A sidder %s, B sidder %s  (Mic11 = %s, Mic12 = %s)\n', ...
+    sideDK(cfg.sideA), sideDK(cfg.sideB), micFacilitator{1}, micFacilitator{2});
 if ~isempty(durationOverride_s)
     warning('TEST MODE: recording duration set to %.1f s in the script (Excel says %.1f s).', ...
         durationOverride_s, cfg.recordingDuration);
     cfg.recordingDuration = durationOverride_s;
 end
 
-plan = planNoise(cfg);                 % soundscape (or silence) for every recording
+cfg.lsAngles = lsAngles;
+plan = planNoise(cfg, soundscapeFile); % same soundscape in every recording (also seeds rng)
+cfg.distractorLS    = distractorLS;       % allowed loudspeakers (checked in validateSetup)
+cfg.distractorMax_s = distractorMax_s;
 validateSetup(cfg, plan, out, fs);     % errors out if anything is wrong
 printDesign(cfg, plan, conditionNames);
 participantName    = cfg.participantName;
@@ -219,13 +276,18 @@ writecell({ ...
     'SessionID',             sessionID; ...
     'RandomSeed',            plan.seed; ...
     'Soundscapemappe',       cfg.backgroundNoiseFolder; ...
-    'FilerISoundscapemappe', plan.poolSize; ...
+    'Soundscape',            soundscapeFile; ...
+    'DistraktorVinkler',     mat2str(distractorAngles); ...
+    'DistraktorHoejttalere', mat2str(distractorLS); ...
     'Lydmappe',              cfg.distractorFolder; ...
     'Betingelser_blok1til6', mat2str([cfg.blocks.condition]); ...
     'Target_blok1til6',      strjoin({cfg.blocks.target}, ' '); ...
     'AndenHalvdel',          cfg.secondHalfOrder; ...
     'TargetMoenster',        cfg.targetPattern; ...
-    'FacilitatorA_sidder',   cfg.facilitatorASide; ...
+    'FacilitatorA_sidder',   cfg.sideA; ...
+    'FacilitatorB_sidder',   cfg.sideB; ...
+    'Mic11_venstre',         ['Facilitator ' micFacilitator{1}]; ...
+    'Mic12_hoejre',          ['Facilitator ' micFacilitator{2}]; ...
     'Optagelseslaengde_sek', recordingDuration}, resultsFile, 'Sheet', 'Session');
 writecell(playlistTable(cfg, plan), resultsFile, 'Sheet', 'Playliste');
 
@@ -261,18 +323,16 @@ toneSig   = repmat(tone, 1, out.nOut);                  % same signal on all lou
 % with FrameTime / the Vicon frames.
 micReaders = {};
 if recordMics
-    readerMADI = audioDeviceReader('Device', micDeviceMADI, 'SampleRate', fs, ...
-        'NumChannels', 2, 'BitDepth', micBitDepth, 'SamplesPerFrame', samplesPerFrame);
     readerANA  = audioDeviceReader('Device', micDeviceANA,  'SampleRate', fs, ...
         'NumChannels', 2, 'BitDepth', micBitDepth, 'SamplesPerFrame', samplesPerFrame);
-    micReaders = {readerMADI, readerANA};
+    micReaders = {readerANA};
 end
 
 % Results (one row per recording) and sound log (one row per sound played).
 % Rows are indexed by the overall recording number, so a redo simply
 % replaces the row(s) of that recording.
 headers  = {'Blok', 'Optagelse', 'Betingelse', 'BetingelseNavn', 'Target', ...
-    'Interferer', 'Historie', 'InterfererHistorie', 'Triggerord', 'AntalSvar', 'Reaktionstider_sek', ...
+    'Interferer', 'TargetSide', 'InterfererSide', 'Historie', 'InterfererHistorie', 'Triggerord', 'AntalSvar', 'Reaktionstider_sek', ...
     'Starttid', 'Soundscape', 'Distraktorer', 'Varighed_sek', 'ViconFil', 'MikrofonFil', 'AntalOmtagninger', 'GazeManglende_pct'};
 results  = cell(totalRecordings, numel(headers));
 recDone  = false(totalRecordings, 1);     % recording has been made at least once
@@ -280,7 +340,7 @@ redoCount = zeros(totalRecordings, 1);     % how often each recording was redone
 viconFiles = cell(totalRecordings, 1);     % file name per recording (reused on redo -> overwrite)
 soundLog    = {};
 soundLogRec = zeros(0, 1);                 % overall recording number of every soundLog row
-logHdr   = {'Blok', 'Optagelse', 'Betingelse', 'Type', 'Fil', 'Hoejttaler', ...
+logHdr   = {'Blok', 'Optagelse', 'Betingelse', 'Type', 'Fil', 'Hoejttaler', 'Vinkel_grader', ...
     'Start_sek', 'Slut_sek', 'Starttid', 'Sluttid'};
 
 % Build the cue window
@@ -304,7 +364,7 @@ try
         % again when a redo goes back into the previous block
         if blockIdx ~= shownBlock || isRedo
             hasSoundscape = any(~cellfun(@isempty, plan.noise(blockIdx, :)));
-            printBlockInstructions(blk, blockIdx, totalBlocks, conditionNames, hasSoundscape);
+            printBlockInstructions(cfg, blk, blockIdx, totalBlocks, conditionNames, hasSoundscape);
             [s1, i1] = storyFor(cfg, blockIdx, 1);
             fprintf('  Target: %s (historie %d-%d)', pileName(cfg, s1), s1, s1 + recordingsPerBlock - 1);
             if ~isnan(i1)
@@ -322,20 +382,20 @@ try
         NoiseFile       = plan.noise{blockIdx, recIdx};   % '' = silence (default)
         [Story, InterfererStory] = storyFor(cfg, blockIdx, recIdx);
         % Build the full playback signal BEFORE the participant starts,
-        % so the recording begins instantly when '1' is pressed.
+        % so the recording begins instantly when ENTER is pressed.
         [sigPlay, Sounds] = buildSignal(cfg, plan, blockIdx, recIdx, ...
             fs, nSamp, out, noiseAmp, distractorAmp);
         % Show cue screen for this recording (participant sees target only)
         showBlock(fig, blockIdx, totalBlocks, targetLabel(cfg, blk.target), ...
             progressAtStart, recIdx, recordingsPerBlock, triggerWord, isRedo);
-        % Wait for '1' (start recording) or '3' (redo the previous recording).
-        % '3' only works on the cue screen of a NEW recording, when a
-        % previous recording exists.
+        % Wait for ENTER (start recording) or BACKSPACE (redo the previous
+        % recording). BACKSPACE only works on the cue screen of a NEW
+        % recording, when a previous recording exists.
         canRedo = ~isRedo && thisRec > 1 && recDone(thisRec - 1);
-        if strcmp(waitForStartOrRedo(fig, canRedo), '3')
-            if confirmRedo(fig)
+        if strcmp(waitForStartOrRedo(fig, canRedo, keyLockout_s), 'redo')
+            if confirmRedo(fig, [], [], [], keyLockout_s)
                 redoRec = thisRec - 1;
-                fprintf('  Omtagning bekræftet (tryk 3 + 3).\n');
+                fprintf('  Omtagning bekræftet (BACKSPACE + BACKSPACE).\n');
             else
                 fprintf('  Omtagning annulleret.\n');
             end
@@ -343,12 +403,11 @@ try
         end
         % Start the mic streams fresh for this recording (they were
         % stopped after the previous one, so no stale buffered audio).
-        MicData        = zeros(nSamp, 3, 'single');            % [AN5 Mic11 Mic12]
-        MicOverrun     = zeros(nFrames, 2);                    % dropped samples [MADI ANA] per frame
-        MicToneData    = zeros(nToneFrames * samplesPerFrame * playStartTone, 3, 'single');
-        MicEndToneData = zeros(nToneFrames * samplesPerFrame * playEndTone,   3, 'single');
+        MicData        = zeros(nSamp, 2, 'single');            % [Mic11 Mic12]
+        MicOverrun     = zeros(nFrames, 1);                    % dropped samples per frame
+        MicToneData    = zeros(nToneFrames * samplesPerFrame * playStartTone, 2, 'single');
+        MicEndToneData = zeros(nToneFrames * samplesPerFrame * playEndTone,   2, 'single');
         if recordMics
-            setup(readerMADI);
             setup(readerANA);
         end
         % Start tone on all loudspeakers -> signals that a new recording
@@ -388,8 +447,8 @@ try
         setappdata(fig, 'recStartTime', recStart);
         setappdata(fig, 'isRecording', true);
         % ---- VICON STREAMING + AUDIO PLAYBACK ----------------------
-        % Runs for exactly nFrames audio frames. In condition 2 the frames
-        % are silent, but still pace the loop so timing is identical.
+        % Runs for exactly nFrames audio frames (soundscape in every
+        % condition, distractors on top in condition 3).
         for seg = 1:nFrames
             data = sigPlay((seg-1)*samplesPerFrame+1 : seg*samplesPerFrame, :);
             while MyClient.GetFrame().Result ~= ViconDataStreamSDK.DotNET.Result.Success
@@ -417,19 +476,18 @@ try
             AP(data);
             % Read the matching mic frame (samplesPerFrame samples each)
             if recordMics
-                [fM, oM] = readerMADI();   % ch1 = AN5
                 [fA, oA] = readerANA();    % ch1 = Mic11, ch2 = Mic12
                 MicData((seg-1)*samplesPerFrame+1 : seg*samplesPerFrame, :) = ...
-                    single([fM(:,1), fA(:,1), fA(:,2)]);
-                MicOverrun(seg, :) = [oM, oA];
+                    single(fA(:, 1:2));
+                MicOverrun(seg) = oA;
             end
-            % Update progress bar; drawnow limitrate also lets the '2'
-            % key-press callback fire without slowing the loop down
+            % Update progress bar; drawnow limitrate also lets the ENTER
+            % (trigger) key-press callback fire without slowing the loop down
             overallPct = progressAtStart + (seg / nFrames) * (100 / totalRecordings);
             updateProgress(fig, overallPct);
         end
         % ------------------------------------------------------------
-        setappdata(fig, 'isRecording', false);   % '2' presses no longer count
+        setappdata(fig, 'isRecording', false);   % ENTER presses no longer count as triggers
         % End tone on all loudspeakers (same tone + level as the start tone)
         % -> signals that the recording is over. Played AFTER the last
         % recorded frame, so the recording itself is unaffected. The mics
@@ -440,8 +498,7 @@ try
         end
         setRecordingState(fig, false);
         if recordMics
-            release(readerMADI);   % stop streams until the next recording
-            release(readerANA);
+            release(readerANA);    % stop stream until the next recording
         end
         % ---- Save Vicon data for this recording --------------------
         TriggerRTs        = getappdata(fig, 'triggerRTs');
@@ -449,6 +506,8 @@ try
         ConditionName     = conditionNames{blk.condition};
         Target            = blk.target;
         Interferer        = interfererOf(blk);
+        TargetSide        = facilitatorSide(cfg, Target);       % 'left' / 'right'
+        InterfererSide    = facilitatorSide(cfg, Interferer);   % '' if no interferer
         TriggerWord       = triggerWord;
         RecordingDuration = recordingDuration;
         Distractors       = Sounds(strcmp({Sounds.Type}, 'Distraktor'));
@@ -477,6 +536,9 @@ try
             'EyeTrackerGlobalPosition', 'EyeTrackerGlobalGazeVector', 'HeadReference', ...
             'FrameTime', 'ViconFrameNumber', 'TriggerRTs', ...
             'Condition', 'ConditionName', 'Target', 'Interferer', ...
+            'TargetSide', 'InterfererSide', 'FacilitatorA_Side', 'FacilitatorB_Side', ...
+            'lsAngles', 'distractorAngles', ...
+            'micFacilitator', 'participantName', ...
             'NoiseFile', 'Distractors', 'Sounds', 'RecordingStartClock', ...
             'TriggerWord', 'Story', 'InterfererStory', 'RecordingDuration', 'RedoCount', ...
             'GazeMissingFrames', 'GazeMissingFraction', ...
@@ -504,7 +566,7 @@ try
         startStr = char(RecordingStartClock);
         results(thisRec, :) = { ...
             blockIdx, recIdx, Condition, ConditionName, Target, Interferer, ...
-            Story, storyCell(InterfererStory), ...
+            TargetSide, InterfererSide, Story, storyCell(InterfererStory), ...
             triggerWord, numel(rts), rtStr, startStr, soundscapeLabel(NoiseFile), ...
             distractorString(Distractors), recordingDuration, viconFile, viconFile, RedoCount, round(100 * GazeMissingFraction, 1) };
         recDone(thisRec) = true;
@@ -516,9 +578,10 @@ try
         for s = 1:numel(Sounds)
             t0 = RecordingStartClock + seconds(Sounds(s).Onset_s);
             t1 = t0 + seconds(Sounds(s).Duration_s);
+            ang = Sounds(s).Angle_deg;  if isnan(ang); ang = ''; end
             soundLog(end+1, :) = { ...
                 blockIdx, recIdx, Condition, Sounds(s).Type, Sounds(s).File, ...
-                Sounds(s).Loudspeaker, Sounds(s).Onset_s, ...
+                Sounds(s).Loudspeaker, ang, Sounds(s).Onset_s, ...
                 Sounds(s).Onset_s + Sounds(s).Duration_s, char(t0), char(t1)}; %#ok<SAGROW>
             soundLogRec(end+1, 1) = thisRec; %#ok<SAGROW>
         end
@@ -545,7 +608,7 @@ try
             fprintf(2, '  ADVARSEL: gaze data mangler i %d af %d frames (%.0f%%).\n', ...
                 GazeMissingFrames, nFrames, 100 * GazeMissingFraction);
             if confirmRedo(fig, 'Advarsel: gaze data er utilstrækkelig.', ...
-                    'Tag seneste optagelse om?', 30)
+                    'Tag seneste optagelse om?', 30, keyLockout_s)
                 redoRec = thisRec;
                 fprintf('  Omtagning bekræftet (gaze-advarsel).\n');
             else
@@ -566,7 +629,7 @@ fprintf('Resultater gemt i %s\n', resultsFile);
 if doQuestionnaire && isvalid(fig)
     fprintf('\n===== SPØRGESKEMA (SEVQuest) =====\n');
     try
-        runQuestionnaire(fig, resultsFile);
+        runQuestionnaire(fig, resultsFile, keyLockout_s);
         fprintf('Spørgeskema gemt på arket "Spoergeskema" i %s\n', resultsFile);
     catch ME
         warning('Spørgeskema afbrudt: %s (svar indtil da er gemt).', ME.message);
@@ -627,6 +690,15 @@ if contains(upper(cfg.facilitatorASide), 'NOT FOUND')
         'Add a row for this participant or fix the name, save the workbook and run again.'], cfg.participantName);
 end
 if isempty(cfg.participantName); cfg.participantName = 'test'; end
+% Seating: Counterbalancing > 'Facilitator A sits' must be left or right
+switch lower(cfg.facilitatorASide)
+    case {'left', 'l', 'venstre', 'v'};  cfg.sideA = 'left';  cfg.sideB = 'right';
+    case {'right', 'r', 'hoejre', 'højre', 'h'}; cfg.sideA = 'right'; cfg.sideB = 'left';
+    otherwise
+        error(['Settings > FacilitatorA_Side is "%s" for participant "%s" - must be left or right. ' ...
+            'Fix "Facilitator A sits" in the Counterbalancing sheet, save the workbook and run again.'], ...
+            cfg.facilitatorASide, cfg.participantName);
+end
 if ~(cfg.recordingDuration > 0)
     error('Settings: RecordingDuration_s must be a positive number.');
 end
@@ -699,26 +771,11 @@ if ismember('Distractors', sheets)
     end
 end
 cfg.distractors = mapToBlocks(D, blocks, 'Distractors');
-% --- Soundscapes (optional sheet): one file per recording,
-%     files relative to BackgroundNoiseFolder. Empty / silence = silence.
-%     Rows are keyed by Condition + Target (or an old-style Block column). ---
-SC = struct('Block', zeros(0, 1), 'Condition', zeros(0, 1), 'Target', {cell(0, 1)}, ...
-    'Recording', zeros(0, 1), 'File', {cell(0, 1)}, 'Path', {cell(0, 1)});
+% --- Soundscapes sheet: no longer used (one fixed soundscape, see
+%     soundscapeFile at the top of the script). ---
 if ismember('Soundscapes', sheets)
-    Sraw = readSheet(file, 'Soundscapes', {'Recording', 'File'});
-    [kB, kC, kT] = rowKeys(Sraw, 'Soundscapes');
-    for i = 1:Sraw.nRows
-        f = toText(Sraw.File{i});
-        if isSilence(f); f = ''; end
-        SC.Block(end+1, 1)     = kB(i);
-        SC.Condition(end+1, 1) = kC(i);
-        SC.Target{end+1, 1}    = kT{i};
-        SC.Recording(end+1, 1) = toNum(Sraw.Recording{i});
-        SC.File{end+1, 1}      = f;
-        SC.Path{end+1, 1}      = findInFolder(f, cfg.backgroundNoiseFolder);
-    end
+    fprintf('Bemaerk: arket "Soundscapes" ignoreres - samme soundscape i alle optagelser.\n');
 end
-cfg.soundscapes = mapToBlocks(SC, blocks, 'Soundscapes');
 % --- Stories: half of all recordings, in coloured piles of RecordingsPerBlock ---
 cfg.nStories = n * cfg.recordingsPerBlock / 2;
 if mod(cfg.nStories, 1) ~= 0
@@ -876,17 +933,12 @@ end
 end
 
 %% Soundscape plan 
-function plan = planNoise(cfg)
-% Decides which soundscape is played on top of silence in every recording
-% of condition 1 and 3:
-%   1. Soundscapes sheet row for that Block/Recording (highest priority)
-%   2. Blocks sheet: RANDOM -> random file from NoiseFolder (no repeats),
-%      file name -> that file for the whole block, empty -> silence.
+function plan = planNoise(cfg, soundscapeFile)
+% The SAME soundscape file is played in every recording of every condition
+% (1, 2 and 3). Also seeds the random generator for this session (the
+% seed is logged and used for the distractor loudspeaker assignment).
 nB  = numel(cfg.blocks);
 rpb = cfg.recordingsPerBlock;
-plan.noise     = repmat({''}, nB, rpb);   % name shown in logs
-plan.noisePath = repmat({''}, nB, rpb);   % full path used for playback
-plan.poolSize  = 0;
 % Random seed: from Settings, or a new one each session (always logged)
 if isnan(cfg.randomSeed)
     rng('shuffle');
@@ -896,72 +948,13 @@ else
     plan.seed = cfg.randomSeed;
 end
 rng(plan.seed);
-% --- Blocks sheet (per block) ---
-slots = zeros(0, 2);
-for b = 1:nB
-    nf = cfg.blocks(b).noiseFile;
-    if ~ismember(cfg.blocks(b).condition, [1 3]) || isempty(nf); continue; end
-    if strcmp(nf, 'RANDOM')
-        slots = [slots; [repmat(b, rpb, 1), (1:rpb)']]; %#ok<AGROW>
-    else
-        plan.noise(b, :)     = {nf};
-        plan.noisePath(b, :) = {findInFolder(nf, cfg.backgroundNoiseFolder)};
-    end
+if isempty(soundscapeFile)
+    error('soundscapeFile is empty - set it at the top of the script.');
 end
-% --- Soundscapes sheet (per recording) overrides the Blocks sheet ---
-SC   = cfg.soundscapes;
-seen = false(nB, rpb);
-for k = 1:numel(SC.Block)
-    row = k + 1;   % Excel row number
-    b = SC.Block(k); r = SC.Recording(k);
-    if ~ismember(b, 1:nB) || ~ismember(r, 1:rpb)
-        error('Soundscapes row %d: Block %g / Recording %g is out of range (blocks 1..%d, recordings 1..%d).', ...
-            row, b, r, nB, rpb);
-    end
-    if seen(b, r)
-        error('Soundscapes sheet: Block %d / Recording %d is listed twice.', b, r);
-    end
-    seen(b, r) = true;
-    if ~ismember(cfg.blocks(b).condition, [1 3])
-        if ~isempty(SC.File{k})
-            warning('Soundscapes row %d: block %d is condition %d (always silent) - row ignored.', ...
-                row, b, cfg.blocks(b).condition);
-        end
-        continue;
-    end
-    if ~isempty(slots)
-        slots = slots(~(slots(:, 1) == b & slots(:, 2) == r), :);
-    end
-    plan.noise{b, r}     = SC.File{k};
-    plan.noisePath{b, r} = SC.Path{k};
-end
-% --- RANDOM slots that are left ---
-if isempty(slots); return; end
-if ~isfolder(cfg.backgroundNoiseFolder)
-    error('BackgroundNoise folder not found: %s', cfg.backgroundNoiseFolder);
-end
-L = dir(fullfile(cfg.backgroundNoiseFolder, '**', cfg.noisePattern));   % includes subfolders
-L = L(~[L.isdir]);
-if isempty(L)
-    error('No files matching "%s" in %s (or its subfolders).', cfg.noisePattern, cfg.backgroundNoiseFolder);
-end
-fullPaths = sort(fullfile({L.folder}, {L.name}));              % fixed order -> reproducible
-top       = dir(cfg.backgroundNoiseFolder);  top = top(1).folder;  % canonical folder path
-names     = strrep(fullPaths, [top filesep], '');              % path inside the noise folder
-plan.poolSize = numel(fullPaths);
-nNeed = size(slots, 1);
-if plan.poolSize < nNeed
-    warning(['Only %d soundscape files for %d recordings - some files will be repeated ' ...
-        '(each file is used once before any repeats).'], plan.poolSize, nNeed);
-end
-order = [];
-while numel(order) < nNeed
-    order = [order, randperm(plan.poolSize)]; %#ok<AGROW>
-end
-for k = 1:nNeed
-    plan.noise{slots(k, 1), slots(k, 2)}     = names{order(k)};
-    plan.noisePath{slots(k, 1), slots(k, 2)} = fullPaths{order(k)};
-end
+p = findInFolder(soundscapeFile, cfg.backgroundNoiseFolder);
+plan.noise     = repmat({soundscapeFile}, nB, rpb);   % name shown in logs
+plan.noisePath = repmat({p}, nB, rpb);                % full path used for playback
+plan.poolSize  = 1;
 end
 function C = playlistTable(cfg, plan)
 % Planned playlist, one row per recording (written before the session).
@@ -974,8 +967,9 @@ for b = 1:numel(cfg.blocks)
         dStr = '';
         if blk.condition == 3
             k = find(D.Block == blk.number & D.Recording == r);
-            dStr = strjoin(arrayfun(@(i) sprintf('%s@LS%d@%.2fs', D.File{i}, ...
-                D.Loudspeaker(i), D.Onset_s(i)), k(:)', 'UniformOutput', false), '; ');
+            dStr = strjoin(arrayfun(@(i) sprintf('%s@LS%d(%ddeg)@%.2fs', D.File{i}, ...
+                D.Loudspeaker(i), cfg.lsAngles(D.Loudspeaker(i)), D.Onset_s(i)), ...
+                k(:)', 'UniformOutput', false), '; ');
         end
         [st, ist] = storyFor(cfg, b, r);
         C(end+1, :) = {b, r, blk.condition, blk.target, st, interfererOf(blk), ...
@@ -1019,13 +1013,6 @@ for c = 1:3
             c, nA, nB); %#ok<AGROW>
     end
 end
-% --- soundscape settings (empty = silence, which is the default) ---
-for b = 1:nBlocks
-    if conds(b) == 2 && ~isempty(cfg.blocks(b).noiseFile)
-        warns{end+1} = sprintf('Block %d is condition 2 (always silent): Soundscape "%s" is ignored.', ...
-            b, cfg.blocks(b).noiseFile); %#ok<AGROW>
-    end
-end
 % Map from Excel block number -> loop index (blocks are sorted by number)
 blockNumbers = [cfg.blocks.number];
 % --- distractor rows ---
@@ -1046,6 +1033,9 @@ for k = 1:numel(D.Block)
     end
     if ~ismember(D.Loudspeaker(k), 1:nCh)
         errs{end+1} = sprintf('Distractors row %d: Loudspeaker must be 1..%d (found %g).', row, nCh, D.Loudspeaker(k)); %#ok<AGROW>
+    elseif ~ismember(D.Loudspeaker(k), cfg.distractorLS)
+        design{end+1} = sprintf('Distractors row %d: Loudspeaker %d (%d deg) is not one of the allowed distractor loudspeakers %s.', ...
+            row, D.Loudspeaker(k), cfg.lsAngles(D.Loudspeaker(k)), mat2str(cfg.distractorLS)); %#ok<AGROW>
     end
     if isnan(D.Onset_s(k)) || D.Onset_s(k) < 0 || D.Onset_s(k) >= cfg.recordingDuration
         errs{end+1} = sprintf('Distractors row %d: Onset_s %g is outside 0..%g s.', row, D.Onset_s(k), cfg.recordingDuration); %#ok<AGROW>
@@ -1058,9 +1048,22 @@ end
 for bIdx = find(conds == 3)
     bNum = blockNumbers(bIdx);
     for r = 1:rpb
-        if ~any(D.Block == bNum & D.Recording == r)
+        inRec = find(useRow & D.Block == bNum & D.Recording == r);
+        if isempty(inRec)
             warns{end+1} = sprintf('Block %d / Recording %d (condition 3) has no distractors.', bNum, r); %#ok<AGROW>
+        elseif numel(unique(D.Loudspeaker(inRec))) < numel(inRec)
+            warns{end+1} = sprintf('Block %d / Recording %d: the same loudspeaker is used more than once.', bNum, r); %#ok<AGROW>
         end
+    end
+end
+% --- balance: every allowed loudspeaker used equally often ---
+usedLS = D.Loudspeaker(useRow);
+if ~isempty(usedLS)
+    nPer = arrayfun(@(x) sum(usedLS == x), cfg.distractorLS);
+    if numel(unique(nPer)) > 1
+        design{end+1} = sprintf(['Distractor loudspeakers are not used equally often: %s ' ...
+            '(LS: times used).'], strjoin(arrayfun(@(x, n) sprintf('LS%d(%d deg): %d', x, ...
+            cfg.lsAngles(x), n), cfg.distractorLS, nPer, 'UniformOutput', false), ', ')); %#ok<AGROW>
     end
 end
 % --- soundscape files that will be played (header check only, fast) ---
@@ -1083,6 +1086,7 @@ for i = 1:numel(noisePaths)
     end
 end
 % --- distractor files ---
+D.Dur_s = zeros(numel(D.Block), 1);   % played duration per row (0 = not played / not found)
 for k = find(useRow)'
     f = D.Path{k};
     if isempty(f); continue; end
@@ -1095,10 +1099,25 @@ for k = find(useRow)'
         warns{end+1} = sprintf('Distractors row %d: %s has fs = %d Hz (expected %d Hz) - will be resampled automatically.', ...
             k + 1, D.File{k}, info.SampleRate, fs); %#ok<AGROW>
     end
-    endT = D.Onset_s(k) + info.Duration;
+    D.Dur_s(k, 1) = min(info.Duration, cfg.distractorMax_s);
+    endT = D.Onset_s(k) + D.Dur_s(k);
     if endT > cfg.recordingDuration
         warns{end+1} = sprintf('Distractors row %d: %s ends at %.1f s, will be cut at %.1f s.', ...
             k + 1, D.File{k}, endT, cfg.recordingDuration); %#ok<AGROW>
+    end
+end
+% --- overlap: two distractors playing at the same time in one recording ---
+for bIdx = find(conds == 3)
+    for r = 1:rpb
+        k = find(useRow & D.Block == blockNumbers(bIdx) & D.Recording == r & D.Dur_s > 0);
+        [t0, o] = sort(D.Onset_s(k));  k = k(o);
+        t1 = t0 + D.Dur_s(k);
+        for j = 2:numel(k)
+            if t0(j) < t1(j - 1)
+                warns{end+1} = sprintf('Block %d / Recording %d: %s (%.1f s) starts before %s has finished (%.1f s).', ...
+                    blockNumbers(bIdx), r, D.File{k(j)}, t0(j), D.File{k(j - 1)}, t1(j - 1)); %#ok<AGROW>
+            end
+        end
     end
 end
 % --- report ---
@@ -1120,14 +1139,9 @@ function printDesign(cfg, plan, conditionNames)
 fprintf('\n===== DESIGN (%s) =====\n', cfg.participantName);
 fprintf('Optagelseslængde: %.1f s  |  %d optagelser pr. blok\n', ...
     cfg.recordingDuration, cfg.recordingsPerBlock);
-if ~isempty(cfg.facilitatorASide)
-    fprintf('Facilitator A sidder: %s  |  anden halvdel: %s  |  target: %s\n', ...
-        cfg.facilitatorASide, cfg.secondHalfOrder, cfg.targetPattern);
-end
-if plan.poolSize > 0
-    fprintf('Tilfældigt soundscape fra: %s  (%d filer, seed %d)\n', ...
-        cfg.backgroundNoiseFolder, plan.poolSize, plan.seed);
-end
+fprintf('Facilitator A sidder: %s  |  Facilitator B sidder: %s  |  anden halvdel: %s  |  target: %s\n', ...
+    sideDK(cfg.sideA), sideDK(cfg.sideB), cfg.secondHalfOrder, cfg.targetPattern);
+fprintf('Soundscape i ALLE optagelser: %s  (seed %d)\n', plan.noise{1, 1}, plan.seed);
 for b = 1:numel(cfg.blocks)
     blk = cfg.blocks(b);
     nD  = sum(cfg.distractors.Block == b);
@@ -1142,23 +1156,33 @@ for b = 1:numel(cfg.blocks)
     if blk.condition == 3; fprintf(', %d distraktorer i alt', nD); end
     fprintf('\n');
 end
+% Distractors per loudspeaker (condition 3 blocks only)
+D3 = ismember(cfg.distractors.Block, find([cfg.blocks.condition] == 3));
+if any(D3)
+    fprintf('Distraktorer pr. hoejttaler (fra arket Distractors):\n');
+    for x = cfg.distractorLS(:)'
+        fprintf('  LS%-2d (%4d°): %d\n', x, cfg.lsAngles(x), sum(cfg.distractors.Loudspeaker(D3) == x));
+    end
+end
 fprintf('Hele playlisten står på arket "Playliste" i resultatfilen.\n');
 fprintf('=========================\n\n');
 end
-function printBlockInstructions(blk, blockIdx, totalBlocks, conditionNames, hasSoundscape)
+function printBlockInstructions(cfg, blk, blockIdx, totalBlocks, conditionNames, hasSoundscape)
 % Instructions for the experimenter / facilitators (command window only).
 other = interfererOf(blk);
 if hasSoundscape; bg = 'soundscape'; else; bg = 'stilhed'; end
 if isempty(other); other = setdiff({'A', 'B'}, {blk.target}); other = other{1}; end
+tgt = sprintf('%s (%s)', blk.target, sideDK(facilitatorSide(cfg, blk.target)));
+oth = sprintf('%s (%s)', other, sideDK(facilitatorSide(cfg, other)));
 fprintf('\n============ BLOK %d/%d — Betingelse %d: %s ============\n', ...
     blockIdx, totalBlocks, blk.condition, conditionNames{blk.condition});
 switch blk.condition
     case 1
-        fprintf('  %s fortæller (TARGET)  |  %s fortæller (INTERFERER)  |  %s\n', blk.target, other, bg);
+        fprintf('  %s fortæller (TARGET)  |  %s fortæller (INTERFERER)  |  %s\n', tgt, oth, bg);
     case 2
-        fprintf('  %s fortæller (TARGET)  |  %s er tavs  |  ingen afspilning\n', blk.target, other);
+        fprintf('  %s fortæller (TARGET)  |  %s er tavs  |  %s\n', tgt, oth, bg);
     case 3
-        fprintf('  %s fortæller (TARGET)  |  %s er tavs  |  %s + distraktorer\n', blk.target, other, bg);
+        fprintf('  %s fortæller (TARGET)  |  %s er tavs  |  %s + distraktorer\n', tgt, oth, bg);
 end
 fprintf('==========================================================\n');
 end
@@ -1166,14 +1190,15 @@ end
 %% Audio
 function [sig, Sounds] = buildSignal(cfg, plan, b, r, fs, nSamp, out, noiseAmp, distractorAmp)
 % Builds the playback matrix (nSamp x numel(channelMapping)) for one recording:
-%   cond 1 : silence, or one soundscape file for the whole recording
-%   cond 2 : silence (still played, so the loop timing is identical)
-%   cond 3 : distractors on top of silence or one soundscape file
+%   cond 1, 2, 3 : the soundscape file for the whole recording
+%   cond 3       : + distractors on top
 % Soundscape channel k -> column out.ssCols(k)  (= soundscapeChannels(k))
 % Loudspeaker ls       -> column out.disCols(ls) (= distractorChannels(ls))
-% Sounds lists everything that is played (Loudspeaker 0 = soundscape channels).
-sig    = zeros(nSamp, out.nOut);   % default: silence
-Sounds = struct('Type', {}, 'File', {}, 'Loudspeaker', {}, 'Onset_s', {}, 'Duration_s', {});
+% Sounds lists everything that is played (Loudspeaker 0 = soundscape channels,
+% Angle_deg = NaN for the soundscape).
+sig    = zeros(nSamp, out.nOut);
+Sounds = struct('Type', {}, 'File', {}, 'Loudspeaker', {}, 'Angle_deg', {}, ...
+    'Onset_s', {}, 'Duration_s', {});
 blk    = cfg.blocks(b);
 nf = plan.noisePath{b, r};
 if ~isempty(nf)
@@ -1188,7 +1213,7 @@ if ~isempty(nf)
     y1 = repmat(y(:, 1), 1, out.nSS);
     sig(:, out.ssCols) = sig(:, out.ssCols) + noiseAmp * y1;
     Sounds(end+1) = struct('Type', 'Soundscape', 'File', plan.noise{b, r}, ...
-        'Loudspeaker', 0, 'Onset_s', 0, 'Duration_s', nSamp / fs);
+        'Loudspeaker', 0, 'Angle_deg', NaN, 'Onset_s', 0, 'Duration_s', nSamp / fs);
 end
 if blk.condition == 3
     D = cfg.distractors;
@@ -1205,13 +1230,13 @@ if blk.condition == 3
         ls  = D.Loudspeaker(k);
         col = out.disCols(ls);
         i0       = round(D.Onset_s(k) * fs) + 1;
-        maxSamps = round(2.0 * fs);   % play at most 2 seconds of each distractor
+        maxSamps = round(min(cfg.distractorMax_s, 1e6) * fs);   % whole file unless distractorMax_s is set
         i1       = min(i0 + min(numel(y), maxSamps) - 1, nSamp);
         sig(i0:i1, col) = sig(i0:i1, col) + distractorAmp * y(1:i1 - i0 + 1);
-        fprintf('[DEBUG] Distractor: file="%s"  LS=%d  device_ch=%d  onset=%.1fs  peak=%.4f\n', ...
-            D.File{k}, ls, out.disCols(ls), D.Onset_s(k), max(abs(distractorAmp * y)));
+        fprintf('[DEBUG] Distractor: file="%s"  LS=%d (%d°)  device_ch=%d  onset=%.1fs  peak=%.4f\n', ...
+            D.File{k}, ls, cfg.lsAngles(ls), out.disCols(ls), D.Onset_s(k), max(abs(distractorAmp * y)));
         Sounds(end+1) = struct('Type', 'Distraktor', 'File', D.File{k}, ...
-            'Loudspeaker', ls, 'Onset_s', D.Onset_s(k), ...
+            'Loudspeaker', ls, 'Angle_deg', cfg.lsAngles(ls), 'Onset_s', D.Onset_s(k), ...
             'Duration_s', (i1 - i0 + 1) / fs); %#ok<AGROW>
     end
     fprintf('[DEBUG] disCols (sig matrix column per LS 1..%d): %s\n', out.nLS, mat2str(out.disCols));
@@ -1254,12 +1279,28 @@ else
     s = '';
 end
 end
+function s = facilitatorSide(cfg, who)
+% 'left' / 'right' for facilitator 'A' or 'B'; '' for no facilitator
+switch who
+    case 'A'; s = cfg.sideA;
+    case 'B'; s = cfg.sideB;
+    otherwise; s = '';
+end
+end
+function s = sideDK(side)
+% Danish label for the command window
+switch side
+    case 'left';  s = 'venstre';
+    case 'right'; s = 'højre';
+    otherwise;    s = '';
+end
+end
 function lbl = targetLabel(cfg, target)
 if strcmp(target, 'A'); lbl = cfg.labelA; else; lbl = cfg.labelB; end
 end
 function s = distractorString(d)
 if isempty(d); s = ''; return; end
-s = strjoin(arrayfun(@(x) sprintf('%s@LS%d@%.2fs', x.File, x.Loudspeaker, x.Onset_s), ...
+s = strjoin(arrayfun(@(x) sprintf('%s@LS%d(%ddeg)@%.2fs', x.File, x.Loudspeaker, x.Angle_deg, x.Onset_s), ...
     d, 'UniformOutput', false), '; ');
 end
 
@@ -1304,19 +1345,28 @@ set(findobj(fig, 'Tag', 'proceedBtn'), ...
     'BackgroundColor', [0.85 0.15 0.15], 'ForegroundColor', [1 1 1]);
 drawnow;
 end
-function waitForEnter(fig)
+function waitForEnter(fig, lockout_s)
 % Blocks until Enter (or numpad Enter) is pressed in the cue window.
+% Presses within lockout_s seconds after the call are ignored.
+if nargin < 2 || isempty(lockout_s); lockout_s = 0; end
 figure(fig);
 drawnow;
+t0 = tic;
 while isvalid(fig)
     if waitforbuttonpress() == 1                     % 1 = key press
-        key = get(fig, 'CurrentKey');
-        ch  = double(get(fig, 'CurrentCharacter'));
-        if strcmp(key, 'return') || any(ismember(ch, [13 3]))
+        if toc(t0) < lockout_s; continue; end
+        if isEnterKey(get(fig, 'CurrentKey'), get(fig, 'CurrentCharacter'))
             return;
         end
     end
 end
+end
+function tf = isEnterKey(key, ch)
+% Enter / Return on the main keyboard or the numpad
+tf = any(strcmpi(key, {'return', 'enter'})) || any(ismember(double(ch), [13 3]));
+end
+function tf = isBackspaceKey(key, ch)
+tf = strcmpi(key, 'backspace') || any(double(ch) == 8);
 end
 function ref = captureHeadReference(MyClient, Subj, Seg, dur_s, fwdLocal)
 % Averages the global head pose over dur_s. ref.ok = false if it failed.
@@ -1380,14 +1430,13 @@ end
 end
 function micBuf = playTone(AP, toneSig, nToneFrames, samplesPerFrame, recordMics, micReaders, micBuf)
 % Plays the start/end tone (all loudspeakers) frame by frame and, if the
-% mics are running, records them into micBuf ([AN5 Mic11 Mic12]).
+% mics are running, records them into micBuf ([Mic11 Mic12]).
 for k = 1:nToneFrames
     idx = (k-1)*samplesPerFrame+1 : k*samplesPerFrame;
     AP(toneSig(idx, :));
     if recordMics
-        fM = micReaders{1}();   % MADI: ch1 = AN5
-        fA = micReaders{2}();   % Analog: ch1 = Mic11, ch2 = Mic12
-        micBuf(idx, :) = single([fM(:,1), fA(:,1), fA(:,2)]);
+        fA = micReaders{1}();   % Analog: ch1 = Mic11, ch2 = Mic12
+        micBuf(idx, :) = single(fA(:, 1:2));
     end
 end
 end
@@ -1474,7 +1523,7 @@ uicontrol(fig, ...
     'Style',               'text', ...
     'Units',               'pixels', ...
     'Position',            [15 357 450 44], ...
-    'String',              'Tryk  2  når du hører:', ...
+    'String',              'Tryk  ENTER  når du hører:', ...
     'FontSize',            22, ...
     'HorizontalAlignment', 'center', ...
     'BackgroundColor',     [1 1 1], ...
@@ -1536,7 +1585,7 @@ uicontrol(fig, ...
     'Style',           'text', ...
     'Units',           'pixels', ...
     'Position',        [15 22 450 112], ...
-    'String',          'TRYK  1  FOR AT FORTSÆTTE', ...
+    'String',          'TRYK  ENTER  FOR AT STARTE', ...
     'FontSize',        28, ...
     'FontWeight',      'bold', ...
     'BackgroundColor', [0.20 0.78 0.35], ...
@@ -1596,8 +1645,8 @@ function p = px2norm(p)
 p = p ./ [480 700 480 700];
 end
 function onKeyPress(fig, evt)
-% Fires on every key press. Appends a new reaction time for each '2' during recording.
-if strcmp(evt.Character, '2')
+% Fires on every key press. Appends a new reaction time for each ENTER during recording.
+if isEnterKey(evt.Key, evt.Character)
     if isappdata(fig, 'isRecording') && getappdata(fig, 'isRecording')
         t0  = getappdata(fig, 'recStartTime');
         rt  = toc(t0);
@@ -1609,18 +1658,26 @@ if strcmp(evt.Character, '2')
     end
 end
 end
-function key = waitForStartOrRedo(fig, canRedo)
-% Blocks until '1' (start recording) or '3' (redo previous recording) is
-% pressed. '3' is only accepted when canRedo is true; otherwise a short
-% note is shown and the function keeps waiting.
+function action = waitForStartOrRedo(fig, canRedo, lockout_s)
+% Blocks until ENTER (start recording -> 'start') or BACKSPACE (redo
+% previous recording -> 'redo') is pressed. BACKSPACE is only accepted
+% when canRedo is true; otherwise a short note is shown and the function
+% keeps waiting. Presses within lockout_s seconds are ignored (so a late
+% trigger press from the previous recording cannot start this one).
+if nargin < 3 || isempty(lockout_s); lockout_s = 0; end
 figure(fig);
-drawnow;
+drawnow;                           % flush key presses queued during the recording
+t0 = tic;
 while true
     if waitforbuttonpress() == 1   % 1 = key press (0 = mouse click)
-        key = get(fig, 'CurrentCharacter');
-        if strcmp(key, '1')
+        if toc(t0) < lockout_s; continue; end
+        key = get(fig, 'CurrentKey');
+        ch  = get(fig, 'CurrentCharacter');
+        if isEnterKey(key, ch)
+            action = 'start';
             return;
-        elseif strcmp(key, '3')
+        elseif isBackspaceKey(key, ch)
+            action = 'redo';
             if canRedo; return; end
             setLabel(fig, 'triggerStatus', 'Ingen tidligere optagelse at tage om');
             set(findobj(fig, 'Tag', 'triggerStatus'), 'ForegroundColor', [0.80 0.10 0.10]);
@@ -1629,11 +1686,13 @@ while true
     end
 end
 end
-function yes = confirmRedo(fig, line1, line2, line2Size)
+function yes = confirmRedo(fig, line1, line2, line2Size, lockout_s)
 % Red safety screen, by default "Tag seneste optagelse om - Er du sikker?".
 % line1 / line2 / line2Size (font size of line2) give other texts, e.g. the
-% gaze data warning. '1' = no, '3' = yes. Every other key is ignored. The normal look of the
+% gaze data warning. ENTER = no, BACKSPACE = yes. Every other key is ignored,
+% and so is any key within lockout_s seconds. The normal look of the
 % window is restored afterwards (the caller redraws the cue screen).
+if nargin < 5 || isempty(lockout_s); lockout_s = 0; end
 red   = [0.80 0.08 0.08];
 white = [1 1 1];
 props = {'BackgroundColor', 'ForegroundColor', 'String', 'FontSize', 'Visible'};
@@ -1655,16 +1714,19 @@ set(findobj(fig, 'Tag', 'condition'), 'FontSize', line2Size * fsc);
 setLabel(fig, 'triggerHeader', '');
 set(findobj(fig, 'Tag', 'triggerWord'), 'Visible', 'off');
 setLabel(fig, 'triggerStatus', '');
-set(findobj(fig, 'Tag', 'proceedBtn'), 'String', '1 = NEJ        3 = JA', ...
+set(findobj(fig, 'Tag', 'proceedBtn'), 'String', 'ENTER = NEJ      BACKSPACE = JA', ...
     'BackgroundColor', [0.55 0.02 0.02], 'ForegroundColor', white);
 figure(fig);
 drawnow;
 yes = false;
+t0  = tic;
 while true
     if waitforbuttonpress() == 1
-        key = get(fig, 'CurrentCharacter');
-        if strcmp(key, '1'); yes = false; break; end
-        if strcmp(key, '3'); yes = true;  break; end
+        if toc(t0) < lockout_s; continue; end
+        key = get(fig, 'CurrentKey');
+        ch  = get(fig, 'CurrentCharacter');
+        if isEnterKey(key, ch);     yes = false; break; end
+        if isBackspaceKey(key, ch); yes = true;  break; end
     end
 end
 % Restore the normal colours / fonts
@@ -1681,7 +1743,7 @@ setLabel(fig, 'blockLabel', sprintf('Blok %d af %d  |  Optagelse %d af %d', ...
     blockIdx, totalBlocks, recIdx, recsPerBlock));
 setLabel(fig, 'instruction',   'Ret opmærksomheden mod');
 setLabel(fig, 'condition',     targetText);
-setLabel(fig, 'triggerHeader', 'Tryk  2  når du hører:');
+setLabel(fig, 'triggerHeader', 'Tryk  ENTER  når du hører:');
 setLabel(fig, 'triggerWord',   triggerWord);
 setLabel(fig, 'triggerStatus', '');   % clear previous response indicator
 set(findobj(fig, 'Tag', 'triggerStatus'), 'ForegroundColor', [0.08 0.58 0.08]);
@@ -1720,7 +1782,7 @@ if isRecording
         'ForegroundColor', [1 1 1]);
 else
     set(btn, ...
-        'String',          'TRYK  1  FOR AT FORTSÆTTE', ...
+        'String',          'TRYK  ENTER  FOR AT STARTE', ...
         'BackgroundColor', [0.20 0.78 0.35], ...
         'ForegroundColor', [1 1 1]);
 end
@@ -1755,10 +1817,12 @@ Q = { ...
     'SEVQ10', 'Generelt', ...
     'I hvilken grad mener du, at resultaterne af dette forsøg kan overføres til virkelige situationer?'};
 end
-function answers = runQuestionnaire(fig, resultsFile)
+function answers = runQuestionnaire(fig, resultsFile, lockout_s)
 % Shows the SEVQuest questions one by one in the cue window. The participant
 % types 1-7 to answer (number row or numpad); Backspace goes back one question.
 % Every answer is written immediately to the sheet 'Spoergeskema'.
+% lockout_s: Enter presses right after the last recording are ignored.
+if nargin < 3; lockout_s = 0; end
 Q       = sevQuestions();
 nQ      = size(Q, 1);
 answers = nan(nQ, 1);
@@ -1775,7 +1839,7 @@ setLabel(fig, 'triggerStatus', '');
 set(findobj(fig, 'Tag', 'proceedBtn'), 'String', 'TRYK  ENTER  FOR AT STARTE', ...
     'BackgroundColor', [0.10 0.45 0.85], 'ForegroundColor', [1 1 1]);
 updateProgress(fig, 0);
-waitForEnter(fig);
+waitForEnter(fig, lockout_s);
 k = 1;
 while k <= nQ
     showQuestion(fig, k, nQ, Q{k, 3}, answers(k));
