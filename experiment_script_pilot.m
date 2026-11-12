@@ -1,7 +1,9 @@
 %% Experimental script with Vicon DataStream SDK
 % PhD pilot recording
 %
-% Updated 11-11-2026 by Josephine Tanyous Rosenqvist
+% Updated 12-11-2026 by Josephine Tanyous Rosenqvist
+%   - distractors: new mark/rikke sentence files (Distractors sheet), both
+%     talkers in every recording; Talker/Category/Text logged
 %   - one fixed soundscape (Cocktail party) in ALL recordings, incl. condition 2
 %   - distractors only from 0, +-45, +-90, +-135, 180 deg, randomised + balanced
 %   - ENTER = start recording + trigger word, BACKSPACE = redo
@@ -25,15 +27,19 @@
 %  NoiseFile column of the Blocks sheet are no longer used.
 %
 %  DISTRACTORS are controlled from the 'Distractors' sheet
-%  (Condition | Target | Recording | File | Loudspeaker | Onset_s; the extra
-%  columns Talker / Angle_deg are for information only). File is relative to
-%  DistractorFolder, e.g. mark\recording_....wav. Each file is played in
+%  (Condition | Target | Recording | File | Loudspeaker | Onset_s | Talker |
+%  Angle_deg | Category | Text). Talker / Category / Text are copied to the
+%  sound log; Angle_deg is for information only. File is relative to
+%  DistractorFolder, e.g. mark\mark_address_01.wav. Each file is played in
 %  full (any length), cut only at the end of the recording.
+%  Every recording must contain BOTH talkers (mark and rikke) - checked
+%  before the session if the Talker column is filled in.
 %  Loudspeakers: only the 8 positions in distractorAngles below are allowed
 %  (0, +-45, +-90, +-135, 180 deg = LS 24, 21, 3, 18, 6, 15, 9, 12).
 %  Before the session the script checks that only these loudspeakers are
 %  used, that each is used equally often, that no loudspeaker is used twice
-%  in one recording and that no two distractors overlap in time.
+%  in one recording, that no recording has only one talker and that no two
+%  distractors overlap in time.
 %  The full playlist is written to the results file BEFORE the first
 %  recording, and every sound that is played is logged with its file name,
 %  loudspeaker, angle and clock time.
@@ -132,7 +138,7 @@ refDuration_s = 2;        % seconds the reference pose is averaged over
 % Audio setup
 fs              = 48000;
 samplesPerFrame = 960;   % 50 fps to match Tobii 50 Hz;
-noiseAmp        = 0.0895;   % gain for the soundscape (if any)
+noiseAmp        = 0.20;   % gain for the soundscape (if any)
 distractorAmp   = 0.20;   % gain for the distractor sounds
 
 % Start / end tone: played on ALL loudspeakers (every channel in channelMapping,
@@ -340,8 +346,8 @@ redoCount = zeros(totalRecordings, 1);     % how often each recording was redone
 viconFiles = cell(totalRecordings, 1);     % file name per recording (reused on redo -> overwrite)
 soundLog    = {};
 soundLogRec = zeros(0, 1);                 % overall recording number of every soundLog row
-logHdr   = {'Blok', 'Optagelse', 'Betingelse', 'Type', 'Fil', 'Hoejttaler', 'Vinkel_grader', ...
-    'Start_sek', 'Slut_sek', 'Starttid', 'Sluttid'};
+logHdr   = {'Blok', 'Optagelse', 'Betingelse', 'Type', 'Fil', 'Taler', 'Kategori', 'Tekst', ...
+    'Hoejttaler', 'Vinkel_grader', 'Start_sek', 'Slut_sek', 'Starttid', 'Sluttid'};
 
 % Build the cue window
 fig = buildCueWindow(cueMonitor, cueFullscreen, cueTextSize);
@@ -581,6 +587,7 @@ try
             ang = Sounds(s).Angle_deg;  if isnan(ang); ang = ''; end
             soundLog(end+1, :) = { ...
                 blockIdx, recIdx, Condition, Sounds(s).Type, Sounds(s).File, ...
+                Sounds(s).Talker, Sounds(s).Category, Sounds(s).Text, ...
                 Sounds(s).Loudspeaker, ang, Sounds(s).Onset_s, ...
                 Sounds(s).Onset_s + Sounds(s).Duration_s, char(t0), char(t1)}; %#ok<SAGROW>
             soundLogRec(end+1, 1) = thisRec; %#ok<SAGROW>
@@ -755,7 +762,8 @@ cfg.triggerWords = tw;
 %     Rows are keyed by Condition + Target (or an old-style Block column).
 D = struct('Block', zeros(0, 1), 'Condition', zeros(0, 1), 'Target', {cell(0, 1)}, ...
     'Recording', zeros(0, 1), 'File', {cell(0, 1)}, 'Path', {cell(0, 1)}, ...
-    'Loudspeaker', zeros(0, 1), 'Onset_s', zeros(0, 1));
+    'Loudspeaker', zeros(0, 1), 'Onset_s', zeros(0, 1), ...
+    'Talker', {cell(0, 1)}, 'Category', {cell(0, 1)}, 'Text', {cell(0, 1)});
 if ismember('Distractors', sheets)
     Draw = readSheet(file, 'Distractors', {'Recording', 'File', 'Loudspeaker', 'Onset_s'});
     [kB, kC, kT] = rowKeys(Draw, 'Distractors');
@@ -768,6 +776,9 @@ if ismember('Distractors', sheets)
         D.Path{end+1, 1}        = findInFolder(D.File{end}, cfg.distractorFolder);
         D.Loudspeaker(end+1, 1) = toNum(Draw.Loudspeaker{i});
         D.Onset_s(end+1, 1)     = toNum(Draw.Onset_s{i});
+        D.Talker{end+1, 1}      = optText(Draw, 'Talker', i);     % optional columns
+        D.Category{end+1, 1}    = optText(Draw, 'Category', i);
+        D.Text{end+1, 1}        = optText(Draw, 'Text', i);
     end
 end
 cfg.distractors = mapToBlocks(D, blocks, 'Distractors');
@@ -781,6 +792,10 @@ cfg.nStories = n * cfg.recordingsPerBlock / 2;
 if mod(cfg.nStories, 1) ~= 0
     error('Blocks x RecordingsPerBlock must be even (each story is read twice).');
 end
+end
+function s = optText(T, field, i)
+% Text of an optional column ('' if the column does not exist)
+if isfield(T, field); s = toText(T.(field){i}); else; s = ''; end
 end
 function [kB, kC, kT] = rowKeys(T, sheet)
 % Per-row key of a Distractors/Soundscapes sheet: Condition + Target
@@ -1054,6 +1069,12 @@ for bIdx = find(conds == 3)
         elseif numel(unique(D.Loudspeaker(inRec))) < numel(inRec)
             warns{end+1} = sprintf('Block %d / Recording %d: the same loudspeaker is used more than once.', bNum, r); %#ok<AGROW>
         end
+        % Both talkers (e.g. mark AND rikke) in every recording
+        tk = lower(D.Talker(inRec));  tk = tk(~cellfun(@isempty, tk));
+        if numel(inRec) > 1 && ~isempty(tk) && numel(unique(tk)) < 2
+            design{end+1} = sprintf('Block %d / Recording %d: all distractors are from the same talker (%s) - each recording must have both talkers.', ...
+                bNum, r, tk{1}); %#ok<AGROW>
+        end
     end
 end
 % --- balance: every allowed loudspeaker used equally often ---
@@ -1197,8 +1218,8 @@ function [sig, Sounds] = buildSignal(cfg, plan, b, r, fs, nSamp, out, noiseAmp, 
 % Sounds lists everything that is played (Loudspeaker 0 = soundscape channels,
 % Angle_deg = NaN for the soundscape).
 sig    = zeros(nSamp, out.nOut);
-Sounds = struct('Type', {}, 'File', {}, 'Loudspeaker', {}, 'Angle_deg', {}, ...
-    'Onset_s', {}, 'Duration_s', {});
+Sounds = struct('Type', {}, 'File', {}, 'Talker', {}, 'Category', {}, 'Text', {}, ...
+    'Loudspeaker', {}, 'Angle_deg', {}, 'Onset_s', {}, 'Duration_s', {});
 blk    = cfg.blocks(b);
 nf = plan.noisePath{b, r};
 if ~isempty(nf)
@@ -1213,7 +1234,7 @@ if ~isempty(nf)
     y1 = repmat(y(:, 1), 1, out.nSS);
     sig(:, out.ssCols) = sig(:, out.ssCols) + noiseAmp * y1;
     Sounds(end+1) = struct('Type', 'Soundscape', 'File', plan.noise{b, r}, ...
-        'Loudspeaker', 0, 'Angle_deg', NaN, 'Onset_s', 0, 'Duration_s', nSamp / fs);
+        'Talker', '', 'Category', '', 'Text', '', 'Loudspeaker', 0, 'Angle_deg', NaN, 'Onset_s', 0, 'Duration_s', nSamp / fs);
 end
 if blk.condition == 3
     D = cfg.distractors;
@@ -1236,6 +1257,7 @@ if blk.condition == 3
         fprintf('[DEBUG] Distractor: file="%s"  LS=%d (%d°)  device_ch=%d  onset=%.1fs  peak=%.4f\n', ...
             D.File{k}, ls, cfg.lsAngles(ls), out.disCols(ls), D.Onset_s(k), max(abs(distractorAmp * y)));
         Sounds(end+1) = struct('Type', 'Distraktor', 'File', D.File{k}, ...
+            'Talker', D.Talker{k}, 'Category', D.Category{k}, 'Text', D.Text{k}, ...
             'Loudspeaker', ls, 'Angle_deg', cfg.lsAngles(ls), 'Onset_s', D.Onset_s(k), ...
             'Duration_s', (i1 - i0 + 1) / fs); %#ok<AGROW>
     end

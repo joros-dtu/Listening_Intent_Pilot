@@ -3,10 +3,17 @@
 %
 %  Reads experimentSetup.xlsx and plays every soundscape and distractor the
 %  experiment uses, EXACTLY as the experiment plays it:
-%    - soundscape : channel 1 of the file, same signal on all soundscapeChannels,
-%                   the first RecordingDuration_s seconds (looped if shorter)
-%    - distractor : channel 1, max 2 s, on one loudspeaker at a time
-%                   (all 6 loudspeakers are measured and energy-averaged)
+%    - soundscape : the ONE fixed soundscapeFile (same as the experiment),
+%                   channel 1 on all soundscapeChannels, the first
+%                   RecordingDuration_s seconds (looped if shorter)
+%    - distractor : every file in the Distractors sheet (condition 3 rows),
+%                   channel 1, the WHOLE file, on one loudspeaker at a time.
+%                   measureAllLS = true : measured on all 8 distractor
+%                   loudspeakers (0, +-45, +-90, +-135, 180 deg) and
+%                   energy-averaged -> one gain per file, independent of
+%                   where it is placed in the Distractors sheet.
+%                   measureAllLS = false: only on the loudspeaker(s) the file
+%                   is assigned to in the Distractors sheet (much faster).
 %  The HATS ears are recorded, the level is computed in dB SPL, and a gain per
 %  file is written to the 'Gains' sheet of experimentSetup.xlsx. The experiment
 %  script reads that sheet and uses the gain for every file.
@@ -41,8 +48,12 @@ calibrationFile     = 'levelCalibrator.mat';   % levelCalibrator = [RMS left, RM
 
 % Measurement
 soundscapeDur_s = [];                  % [] = RecordingDuration_s from Excel (what the experiment plays)
-distractorMax_s = 2.0;                 % experiment plays max 2 s of each distractor
+distractorMax_s = Inf;                 % experiment plays the whole distractor file (Inf)
 tail_s          = 0.5;                 % silence after each sound (system latency)
+measureAllLS    = true;                % true = every distractor on all 8 loudspeakers (~30 min)
+                                       % false = only on its loudspeaker(s) from the Distractors sheet (~5 min)
+onlyNewFiles    = false;               % 'calibrate' only: true = measure only files that are not
+                                       % yet in the Gains sheet (keeps the existing gains)
 
 % --- MUST be identical to experiment_script_pilot.m ---------------
 fs                 = 48000;
@@ -50,7 +61,11 @@ samplesPerFrame    = 960;
 device             = 'ASIO MADIface USB';
 noiseAmp           = 0.20;             % start gain soundscapes ('calibrate')
 distractorAmp      = 0.20;             % start gain distractors ('calibrate')
-distractorChannels = 30 + [2 4 6 22 20 18];
+soundscapeFile     = 'Cocktail-Party_Large_Background_C-01_EM32_130dBFS_4OA.wav';
+distractorChannels = 30 + (1:24);      % loudspeaker k = device channel 30 + k
+lsAngles = [-15 -30 -45 -60 -75 -90 -105 -120 -135 -150 -165 180 ...
+            165 150 135 120 105 90 75 60 45 30 15 0];   % angle of loudspeaker 1..24
+distractorAngles   = [0 45 -45 90 -90 135 -135 180];    % loudspeakers used for distractors
 soundscapeChannels = [2:2:24 25:48];
 % --- HATS input ---------------------------------------------------
 hatsChannels       = [5 6];            % left, right
@@ -64,10 +79,29 @@ channelMapping = unique([soundscapeChannels, distractorChannels]);
 [~, ssCols]  = ismember(soundscapeChannels, channelMapping);
 [~, disCols] = ismember(distractorChannels, channelMapping);
 nOut = numel(channelMapping);
-nLS  = numel(distractorChannels);
+[okAng, measLS] = ismember(distractorAngles, lsAngles);   % loudspeaker numbers to measure on
+if ~all(okAng); error('distractorAngles not found in lsAngles.'); end
+nLS  = numel(measLS);          % columns of Lls = these loudspeakers
+fprintf('Distractor loudspeakers: %s\n', strjoin(arrayfun(@(l) sprintf('LS%d (%d deg)', ...
+    l, lsAngles(l)), measLS, 'UniformOutput', false), ', '));
 
 %% ---- Which files does the experiment use? ----
-[stim, recDur] = listStimuli(setupFile, scriptDir);
+[stim, recDur] = listStimuli(setupFile, scriptDir, soundscapeFile);
+if onlyNewFiles && strcmp(mode, 'calibrate')
+    Gold = readGains(setupFile);
+    isNew = ~cellfun(@(t, f) isKey(Gold, gainKey(t, f)), {stim.Type}, {stim.File});
+    fprintf('onlyNewFiles: %d of %d files are not in the Gains sheet yet - only these are measured.\n', ...
+        sum(isNew), numel(stim));
+    stim = stim(isNew);
+    if isempty(stim); fprintf('Nothing to measure.\n'); return; end
+end
+for i = 1:numel(stim)
+    bad = setdiff(stim(i).LS, measLS);
+    if ~isempty(bad)
+        warning('%s is assigned to loudspeaker(s) %s in the Distractors sheet, which are not in distractorAngles.', ...
+            stim(i).File, mat2str(bad));
+    end
+end
 if isempty(soundscapeDur_s); soundscapeDur_s = recDur; end
 isSS  = strcmp({stim.Type}, 'Soundscape');
 nStim = numel(stim);
@@ -99,8 +133,14 @@ elseif ~strcmp(mode, 'calibrate')
 end
 
 %% ---- Estimated duration ----
+disDur = arrayfun(@(s) min(fileDuration(s.Path), distractorMax_s), stim(~isSS));
+if measureAllLS
+    nPlay = nLS * ones(size(disDur));
+else
+    nPlay = arrayfun(@(s) numel(s.LS), stim(~isSS));
+end
 estMin = (sum(isSS) * (soundscapeDur_s + tail_s) + ...
-          sum(~isSS) * nLS * (distractorMax_s + tail_s + 0.5)) / 60;
+          sum(nPlay(:) .* (disDur(:) + tail_s + 0.6))) / 60;
 fprintf('Estimated measurement time: %.0f min (+ calibration).\n', estMin);
 
 %% ---- Audio devices ----
@@ -173,21 +213,30 @@ try
             Lear(i, :) = 10*log10(k2 .* ms);
         else
             y = readMono(stim(i).Path, fs, []);
-            y = y(1:min(end, round(distractorMax_s * fs)));
+            y = y(1:min(end, round(min(distractorMax_s, 1e6) * fs)));   % whole file (as experiment)
             peak(i) = max(abs(y));
             n = numel(y);
-            msLS = zeros(nLS, 2);
-            snrLS = zeros(nLS, 2);
-            for ls = 1:nLS
+            if measureAllLS
+                useLS = measLS;
+            else
+                useLS = intersect(measLS, stim(i).LS, 'stable');
+                if isempty(useLS); useLS = measLS; end   % not assigned -> measure on all
+            end
+            msLS  = nan(nLS, 2);
+            snrLS = nan(nLS, 2);
+            for j = find(ismember(measLS, useLS))
                 sig = zeros(n, nOut);
-                sig(:, disCols(ls)) = amp(i) * y;
-                [msLS(ls, :), snrLS(ls, :)] = measure(APR, sig, n, tail_s, fs, samplesPerFrame, msFloor);
+                sig(:, disCols(measLS(j))) = amp(i) * y;
+                [msLS(j, :), snrLS(j, :)] = measure(APR, sig, n, tail_s, fs, samplesPerFrame, msFloor);
                 pause(0.5);
             end
-            snr = min(snrLS, [], 1);
-            Lear(i, :) = 10*log10(k2 .* mean(msLS, 1));
+            done = ~isnan(msLS(:, 1));
+            snr = min(snrLS(done, :), [], 1);
+            Lear(i, :) = 10*log10(k2 .* mean(msLS(done, :), 1));
             Lls(i, :)  = 10*log10(mean(k2 .* msLS, 2)).';
-            fprintf('  per loudspeaker: %s dB\n', sprintf('%6.1f', Lls(i, :)));
+            fprintf('  per loudspeaker (%s): %s dB\n', ...
+                strjoin(arrayfun(@(l) sprintf('%d', lsAngles(l)), measLS(done), 'UniformOutput', false), ' / '), ...
+                sprintf('%6.1f', Lls(i, done)));
         end
         fprintf('  L %.1f / R %.1f dB SPL  ->  %.1f dB (target %.1f)   [noise-corrected, S/N L %.1f / R %.1f dB]\n', ...
             Lear(i, :), energyMean(Lear(i, :)), target(i), snr);
@@ -226,6 +275,22 @@ if strcmp(mode, 'calibrate')
     backup = sprintf('%s_backup_%s.xlsx', erase(setupFile, '.xlsx'), ...
         char(datetime('now', 'Format', 'yyyyMMdd_HHmmss')));
     copyfile(setupFile, backup);
+    % Keep the old Gains rows of files that were NOT measured now
+    % (e.g. onlyNewFiles = true); measured files get their new row.
+    if ismember('Gains', sheetnames(setupFile))
+        Told = readtable(setupFile, 'Sheet', 'Gains', 'TextType', 'char');
+        if ~isempty(Told) && all(ismember(T.Properties.VariableNames, Told.Properties.VariableNames))
+            newKeys = cellfun(@gainKey, T.Type, T.File, 'UniformOutput', false);
+            oldKeys = cellfun(@gainKey, Told.Type, Told.File, 'UniformOutput', false);
+            Told = Told(~ismember(oldKeys, newKeys), T.Properties.VariableNames);
+            if isdatetime(Told.CalibrationDate)
+                Told.CalibrationDate = cellstr(char(Told.CalibrationDate, 'yyyy-MM-dd HH:mm'));
+            elseif isstring(Told.CalibrationDate)
+                Told.CalibrationDate = cellstr(Told.CalibrationDate);
+            end
+            T = [Told; T];
+        end
+    end
     writetable(T, setupFile, 'Sheet', 'Gains', 'WriteMode', 'overwritesheet');
     writecell({'Parameter', 'Value'; 'Date', calDateStr; 'Calibrator_dB', Lcal; ...
         'CalibratorRMS_L', levelCalibrator(1); 'CalibratorRMS_R', levelCalibrator(2); ...
@@ -255,7 +320,8 @@ end
 save(sprintf('levelCalibration_%s_%s.mat', mode, ...
     char(datetime('now', 'Format', 'yyyyMMdd_HHmmss'))), ...
     'T', 'Lear', 'Lls', 'Lfloor', 'levelCalibrator', 'Lcal', 'stim', 'amp', ...
-    'distractorChannels', 'soundscapeChannels', 'soundscapeDur_s', 'distractorMax_s');
+    'distractorChannels', 'soundscapeChannels', 'soundscapeDur_s', 'distractorMax_s', ...
+    'measLS', 'lsAngles', 'measureAllLS');
 
 
 %% ================================================================
@@ -302,6 +368,11 @@ function rec = playRecord(APR, sig, spf)
     end
 end
 
+function d = fileDuration(p)
+    info = audioinfo(p);
+    d = info.Duration;
+end
+
 function L = energyMean(Ldb)
     L = 10*log10(mean(10.^(Ldb(:)/10)));
 end
@@ -339,8 +410,12 @@ function G = readGains(setupFile)
     end
 end
 
-function [stim, recDur] = listStimuli(file, baseDir)
-% Unique soundscape / distractor files that the experiment will play.
+function [stim, recDur] = listStimuli(file, baseDir, soundscapeFile)
+% Unique soundscape / distractor files that the experiment will play:
+%   - the one fixed soundscapeFile (played in every recording)
+%   - every file in the Distractors sheet that belongs to condition 3
+%     (Condition column; an old-style Block column is also understood).
+% stim(i).LS = loudspeaker(s) the file is assigned to in the Distractors sheet.
     S = readcell(file, 'Sheet', 'Settings');
     prm = containers.Map();
     for i = 2:size(S, 1)
@@ -355,46 +430,54 @@ function [stim, recDur] = listStimuli(file, baseDir)
                    getSetting(prm, 'SoundscapeFolder', ...
                    getSetting(prm, 'NoiseFolder', disDir)))), baseDir);
 
-    B = readSheet(file, 'Blocks');
-    cond = containers.Map('KeyType', 'double', 'ValueType', 'double');
-    for i = 1:numel(B.Block); cond(toNum(B.Block{i})) = toNum(B.Condition{i}); end
-    if isfield(B, 'Soundscape') || isfield(B, 'NoiseFile')
-        warning(['Blocks sheet has a Soundscape/NoiseFile column - only the Soundscapes ' ...
-            'sheet is used here. Check that no block uses RANDOM or a fixed file.']);
-    end
-
-    stim = struct('Type', {}, 'File', {}, 'Path', {});
+    stim = struct('Type', {}, 'File', {}, 'Path', {}, 'LS', {});
     seen = {};
+    [stim, seen] = addStim(stim, seen, 'Soundscape', soundscapeFile, noiseDir);
 
-    sheets = sheetnames(file);
-    if ismember('Soundscapes', sheets)
-        SC = readSheet(file, 'Soundscapes');
-        for i = 1:numel(SC.Block)
-            b = toNum(SC.Block{i}); f = toText(SC.File{i});
-            if isempty(f) || any(strcmpi(f, {'silence', 'stilhed', 'none'})); continue; end
-            if ~isKey(cond, b) || ~ismember(cond(b), [1 3]); continue; end
-            [stim, seen] = addStim(stim, seen, 'Soundscape', f, noiseDir);
-        end
-    end
-    if ismember('Distractors', sheets)
+    if ismember('Distractors', sheetnames(file))
         D = readSheet(file, 'Distractors');
-        for i = 1:numel(D.Block)
-            b = toNum(D.Block{i}); f = toText(D.File{i});
-            if isempty(f) || ~isKey(cond, b) || cond(b) ~= 3; continue; end
-            [stim, seen] = addStim(stim, seen, 'Distractor', f, disDir);
+        n = numel(D.File);
+        isCond3 = false(n, 1);
+        if isfield(D, 'Condition')
+            for i = 1:n; isCond3(i) = toNum(D.Condition{i}) == 3; end
+        elseif isfield(D, 'Block')               % old style: Block -> condition via Blocks sheet
+            B = readSheet(file, 'Blocks');
+            cond = containers.Map('KeyType', 'double', 'ValueType', 'double');
+            for i = 1:numel(B.Block); cond(toNum(B.Block{i})) = toNum(B.Condition{i}); end
+            for i = 1:n
+                b = toNum(D.Block{i});
+                isCond3(i) = isKey(cond, b) && cond(b) == 3;
+            end
+        else
+            error('Distractors sheet needs a Condition (or Block) column.');
+        end
+        for i = find(isCond3)'
+            f = toText(D.File{i});
+            if isempty(f); continue; end
+            ls = NaN;
+            if isfield(D, 'Loudspeaker'); ls = toNum(D.Loudspeaker{i}); end
+            [stim, seen] = addStim(stim, seen, 'Distractor', f, disDir, ls);
         end
     end
 end
 
-function [stim, seen] = addStim(stim, seen, type, f, folder)
+function [stim, seen] = addStim(stim, seen, type, f, folder, ls)
+% Adds a file once; if it is listed again, only its loudspeaker is added.
+    if nargin < 6; ls = NaN; end
     key = gainKey(type, f);
-    if ismember(key, seen); return; end
+    k = find(strcmp(seen, key), 1);
+    if ~isempty(k)
+        if ~isnan(ls); stim(k).LS = unique([stim(k).LS, ls]); end
+        return;
+    end
     seen{end+1} = key;
-    stim(end+1) = struct('Type', type, 'File', f, 'Path', findInFolder(f, folder));
+    lsList = ls(~isnan(ls));
+    stim(end+1) = struct('Type', type, 'File', f, 'Path', findInFolder(f, folder), 'LS', lsList);
 end
 
 function T = readSheet(file, sheet)
     C = readcell(file, 'Sheet', sheet);
+    C(cellfun(@(v) isa(v, 'missing'), C)) = {''};
     hdr = cellfun(@toText, C(1, :), 'UniformOutput', false);
     body = C(2:end, :);
     body = body(~all(cellfun(@(v) isempty(toText(v)), body), 2), :);
